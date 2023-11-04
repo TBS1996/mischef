@@ -363,16 +363,16 @@ pub trait Tab {
         }
     }
 
-    fn entry_render(&mut self, f: &mut Frame, cache: &mut Self::AppData, area: Rect) {
-        self.check_popup_value();
+    fn entry_render(&mut self, f: &mut Frame, app_data: &mut Self::AppData, area: Rect) {
+        self.check_popup_value(app_data);
 
         match self.pop_up() {
-            Some(pop_up) => pop_up.entry_render(f, cache, area),
+            Some(pop_up) => pop_up.entry_render(f, app_data, area),
             None => {
                 self.view().areas.clear();
                 self.set_selection(area);
                 self.view().validate_pos();
-                self.render(f, cache);
+                self.render(f, app_data);
             }
         }
     }
@@ -411,5 +411,5 @@ pub trait Tab {
     }
 
     // Check if the popup has resolved
-    fn check_popup_value(&mut self, app_data: &mut Self::AppData) {}
+    fn check_popup_value(&mut self, _app_data: &mut Self::AppData) {}
 }

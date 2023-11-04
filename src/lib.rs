@@ -411,6 +411,5 @@ pub trait Tab {
     }
 
     // Check if the popup has resolved
-    fn check_popup_value(&mut self) {}
+    fn check_popup_value(&mut self, app_data: &mut Self::AppData) {}
 }
-

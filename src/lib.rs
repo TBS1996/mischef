@@ -391,7 +391,7 @@ pub trait Tab {
                 panic!()
             };
 
-            self.handle_popup_value(app_data, Box::new(resolved_value));
+            self.handle_popup_value(app_data, resolved_value);
         }
     }
 

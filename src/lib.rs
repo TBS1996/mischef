@@ -374,6 +374,10 @@ pub trait Tab {
         &mut self.tabdata().popup_state
     }
 
+    fn remove_popup(&mut self) {
+        self.tabdata().popup = None;
+    }
+
     fn check_popup_value(&mut self, app_data: &mut Self::AppState) {
         let mut is_exit = false;
         let mut is_resolve = false;
@@ -389,7 +393,7 @@ pub trait Tab {
         }
 
         if is_exit {
-            self.tabdata().popup = None;
+            self.remove_popup();
             return;
         }
 

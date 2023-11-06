@@ -323,6 +323,17 @@ pub struct TabData<T> {
     pub popup: Option<Box<dyn Tab<AppState = T>>>,
 }
 
+impl<T> Debug for TabData<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TabData")
+            .field("areas", &self.areas)
+            .field("cursor", &self.cursor)
+            .field("is_selected", &self.is_selected)
+            .field("popup_state", &self.popup_state)
+            .finish()
+    }
+}
+
 pub trait Tab {
     type AppState;
 

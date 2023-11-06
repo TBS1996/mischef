@@ -342,6 +342,14 @@ pub trait Tab {
     fn set_selection(&mut self, area: Rect);
     fn tabdata(&mut self) -> &mut TabData<Self::AppState>;
 
+    fn resolve_tab(&mut self, value: Box<dyn Any>) {
+        *self.popup_state() = PopUpState::Resolve(value);
+    }
+
+    fn exit_tab(&mut self) {
+        *self.popup_state() = PopUpState::Exit;
+    }
+
     fn set_popup(&mut self, pop: Box<dyn Tab<AppState = Self::AppState>>) {
         self.tabdata().popup = Some(pop);
     }
@@ -351,7 +359,11 @@ pub trait Tab {
     }
 
     fn get_popup_value(&mut self) -> Option<&mut PopUpState> {
-        self.pop_up().map(|x| &mut x.tabdata().popup_state)
+        self.pop_up().map(|x| x.popup_state())
+    }
+
+    fn popup_state(&mut self) -> &mut PopUpState {
+        &mut self.tabdata().popup_state
     }
 
     fn check_popup_value(&mut self, app_data: &mut Self::AppState) {
@@ -374,12 +386,7 @@ pub trait Tab {
 
         // weird to do it like this but theres like double mutably borrow rules otherwise.
         if is_resolve {
-            let popup = std::mem::take(&mut self.tabdata().popup);
-            let mut popup = popup.unwrap();
-
-            let PopUpState::Resolve(resolved_value) =
-                std::mem::take(&mut popup.tabdata().popup_state)
-            else {
+            let PopUpState::Resolve(resolved_value) = std::mem::take(self.popup_state()) else {
                 panic!()
             };
 
@@ -387,7 +394,6 @@ pub trait Tab {
         }
     }
 
-    // Check if the popup has resolved
     fn handle_popup_value(&mut self, _app_data: &mut Self::AppState, _return_value: Box<dyn Any>) {}
 
     fn entry_keyhandler(&mut self, key: Event, app_data: &mut Self::AppState) -> ControlFlow<()> {

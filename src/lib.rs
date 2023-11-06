@@ -114,8 +114,8 @@ impl<T> App<T> {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Pos {
-    x: u16,
-    y: u16,
+    pub x: u16,
+    pub y: u16,
 }
 
 impl Pos {

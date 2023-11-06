@@ -414,15 +414,7 @@ pub trait Tab {
     fn handle_popup_value(&mut self, _app_data: &mut Self::AppState, _return_value: Box<dyn Any>) {}
 
     fn entry_keyhandler(&mut self, key: Event, app_data: &mut Self::AppState) -> ControlFlow<()> {
-        if let Some(popup) = self.pop_up() {
-            let x = popup.entry_keyhandler(key, app_data);
-            if x.is_break() {
-                self.remove_popup();
-            }
-            return x;
-        }
-
-        let key = match key {
+        let key_code = match key {
             Event::Key(x) => x,
             // todo find out why it doesnt work
             Event::Mouse(x) => {
@@ -437,24 +429,34 @@ pub trait Tab {
             }
         };
 
-        if !self.selected() && key.code == KeyCode::Esc {
+        if let Some(popup) = self.pop_up() {
+            if key_code.code == KeyCode::Esc && popup.pop_up().is_none() {
+                self.remove_popup();
+                return ControlFlow::Break(());
+            }
+            return popup.entry_keyhandler(key, app_data);
+        }
+
+        if !self.selected() && key_code.code == KeyCode::Esc {
             self.exit_tab();
             return ControlFlow::Break(());
-        } else if self.selected() && key.code == KeyCode::Esc {
+        } else if self.selected() && key_code.code == KeyCode::Esc {
             self.tabdata().is_selected = false;
             return ControlFlow::Continue(());
-        } else if let Ok(ret) = Retning::try_from(key) {
+        } else if let Ok(ret) = Retning::try_from(key_code) {
             if !self.selected() {
                 self.navigate(ret);
                 return ControlFlow::Continue(());
             }
         }
 
-        if self.tab_keyhandler(app_data, key) {
-            if !self.selected() && key.code == KeyCode::Char(' ') || key.code == KeyCode::Enter {
+        if self.tab_keyhandler(app_data, key_code) {
+            if !self.selected() && key_code.code == KeyCode::Char(' ')
+                || key_code.code == KeyCode::Enter
+            {
                 self.tabdata().is_selected = true;
             } else {
-                self.widget_keyhandler(app_data, key);
+                self.widget_keyhandler(app_data, key_code);
             }
         }
 

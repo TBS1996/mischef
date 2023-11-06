@@ -382,11 +382,12 @@ pub trait Tab {
 
         if is_exit {
             self.tabdata().popup = None;
+            return;
         }
 
         // weird to do it like this but theres like double mutably borrow rules otherwise.
         if is_resolve {
-            let PopUpState::Resolve(resolved_value) = std::mem::take(self.popup_state()) else {
+            let PopUpState::Resolve(resolved_value) = std::mem::take(popval) else {
                 panic!()
             };
 

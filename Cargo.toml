@@ -1,6 +1,6 @@
 [package]
 name = "mischef"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "Framework using ratatui"
 license = "MIT OR Apache-2.0"

@@ -392,6 +392,7 @@ pub trait Tab {
             };
 
             self.handle_popup_value(app_data, resolved_value);
+            self.tabdata().popup = None;
         }
     }
 

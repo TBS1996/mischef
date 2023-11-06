@@ -98,7 +98,15 @@ impl<T> App<T> {
             };
         }
 
-        self.tabs[self.tab_idx].entry_keyhandler(key, &mut self.app_state)
+        let tab = &mut self.tabs[self.tab_idx];
+
+        tab.entry_keyhandler(key, &mut self.app_state);
+
+        if tab.should_exit() {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
     }
 
     fn go_right(&mut self) {
@@ -419,6 +427,7 @@ pub trait Tab {
         };
 
         if !self.selected() && key.code == KeyCode::Esc {
+            self.exit_tab();
             return ControlFlow::Break(());
         } else if self.selected() && key.code == KeyCode::Esc {
             self.tabdata().is_selected = false;
@@ -481,6 +490,10 @@ pub trait Tab {
                 self.render(f, app_data);
             }
         }
+    }
+
+    fn should_exit(&mut self) -> bool {
+        matches!(self.popup_state(), PopUpState::Exit)
     }
 
     fn render(&mut self, f: &mut ratatui::Frame, app_data: &mut Self::AppState) {

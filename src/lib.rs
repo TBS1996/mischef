@@ -1,4 +1,4 @@
-use std::ops::ControlFlow;
+use std::{any::Any, fmt::Debug, ops::ControlFlow};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use ratatui::{
@@ -39,21 +39,21 @@ type Term = ratatui::Terminal<Bakende>;
 type Bakende = ratatui::backend::CrosstermBackend<std::io::Stderr>;
 
 pub struct App<T> {
-    app_data: T,
+    app_state: T,
     terminal: Term,
     tab_idx: usize,
-    tabs: Vec<Box<dyn Tab<AppData = T>>>,
+    tabs: Vec<Box<dyn Tab<AppState = T>>>,
 }
 
 impl<T> App<T> {
-    pub fn new(app_data: T, tabs: Vec<Box<dyn Tab<AppData = T>>>) -> Self {
+    pub fn new(app_data: T, tabs: Vec<Box<dyn Tab<AppState = T>>>) -> Self {
         let terminal = Terminal::new(CrosstermBackend::new(std::io::stderr())).unwrap();
 
         assert!(!tabs.is_empty());
 
         Self {
             terminal,
-            app_data,
+            app_state: app_data,
             tabs,
             tab_idx: 0,
         }
@@ -82,7 +82,7 @@ impl<T> App<T> {
 
                 f.render_widget(tabs, tab_area);
 
-                self.tabs[self.tab_idx].entry_render(f, &mut self.app_data, remainder_area);
+                self.tabs[self.tab_idx].entry_render(f, &mut self.app_state, remainder_area);
             })
             .unwrap();
     }
@@ -98,7 +98,7 @@ impl<T> App<T> {
             };
         }
 
-        self.tabs[self.tab_idx].entry_keyhandler(key, &mut self.app_data)
+        self.tabs[self.tab_idx].entry_keyhandler(key, &mut self.app_state)
     }
 
     fn go_right(&mut self) {
@@ -124,7 +124,7 @@ impl Pos {
     }
 }
 
-impl View {
+impl<T> TabData<T> {
     pub fn _debug_show_cursor(&self, f: &mut Frame) {
         f.set_cursor(self.cursor.x, self.cursor.y);
     }
@@ -227,12 +227,40 @@ impl View {
     }
 }
 
+pub enum PopUpState {
+    Exit,
+    Continue,
+    Resolve(Box<dyn Any>),
+}
+
+impl Default for PopUpState {
+    fn default() -> Self {
+        Self::Continue
+    }
+}
+
+impl Debug for PopUpState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Exit => write!(f, "Exit"),
+            Self::Continue => write!(f, "Continue"),
+            Self::Resolve(arg0) => f.debug_tuple("Resolve").field(arg0).finish(),
+        }
+    }
+}
+
 pub trait Widget {
     type AppData;
 
     fn keyhandler(&mut self, app_data: &mut Self::AppData, key: KeyEvent);
-    fn main_render(&mut self, f: &mut Frame, app_data: &mut Self::AppData, view: &View) {
-        let rect = self.draw_titled_border(f, view);
+    fn main_render(
+        &mut self,
+        f: &mut Frame,
+        app_data: &mut Self::AppData,
+        is_selected: bool,
+        cursor: Pos,
+    ) {
+        let rect = self.draw_titled_border(f, is_selected, cursor);
         self.render(f, app_data, rect);
     }
 
@@ -243,11 +271,11 @@ pub trait Widget {
         ""
     }
 
-    fn draw_titled_border(&self, f: &mut Frame, view: &View) -> Rect {
+    fn draw_titled_border(&self, f: &mut Frame, is_selected: bool, cursor: Pos) -> Rect {
         let block = Block::default().title(self.title()).borders(Borders::ALL);
 
-        let block = if View::isitselected(self.area(), &view.cursor) {
-            if view.is_selected {
+        let block = if TabData::<Self::AppData>::isitselected(self.area(), &cursor) {
+            if is_selected {
                 block.border_style(Style {
                     fg: Some(ratatui::style::Color::Red),
                     ..Default::default()
@@ -282,21 +310,76 @@ pub trait Widget {
     }
 
     fn is_selected(&self, cursor: &Pos) -> bool {
-        View::isitselected(self.area(), cursor)
+        TabData::<Self::AppData>::isitselected(self.area(), cursor)
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct View {
+#[derive(Default)]
+pub struct TabData<T> {
     pub areas: Vec<Rect>,
     pub cursor: Pos,
     pub is_selected: bool,
+    pub popup_state: PopUpState,
+    pub popup: Option<Box<dyn Tab<AppState = T>>>,
 }
 
 pub trait Tab {
-    type AppData;
+    type AppState;
 
-    fn entry_keyhandler(&mut self, key: Event, app_data: &mut Self::AppData) -> ControlFlow<()> {
+    fn widgets(&mut self) -> Vec<&mut dyn Widget<AppData = Self::AppState>>;
+    fn title(&self) -> &str;
+    fn set_selection(&mut self, area: Rect);
+    fn tabdata(&mut self) -> &mut TabData<Self::AppState>;
+
+    fn set_popup(&mut self, pop: Box<dyn Tab<AppState = Self::AppState>>) {
+        self.tabdata().popup = Some(pop);
+    }
+
+    fn pop_up(&mut self) -> Option<&mut Box<dyn Tab<AppState = Self::AppState>>> {
+        self.tabdata().popup.as_mut()
+    }
+
+    fn get_popup_value(&mut self) -> Option<&mut PopUpState> {
+        self.pop_up().map(|x| &mut x.tabdata().popup_state)
+    }
+
+    fn check_popup_value(&mut self, app_data: &mut Self::AppState) {
+        let mut is_exit = false;
+        let mut is_resolve = false;
+
+        let Some(popval) = self.get_popup_value() else {
+            return;
+        };
+
+        match popval {
+            PopUpState::Exit => is_exit = true,
+            PopUpState::Continue => return,
+            PopUpState::Resolve(_) => is_resolve = true,
+        }
+
+        if is_exit {
+            self.tabdata().popup = None;
+        }
+
+        // weird to do it like this but theres like double mutably borrow rules otherwise.
+        if is_resolve {
+            let popup = std::mem::take(&mut self.tabdata().popup);
+            let mut popup = popup.unwrap();
+
+            let PopUpState::Resolve(resolved_value) =
+                std::mem::take(&mut popup.tabdata().popup_state)
+            else {
+                panic!()
+            };
+
+            self.handle_popup_value(app_data, Box::new(resolved_value));
+        }
+    }
+
+    // Check if the popup has resolved
+    fn handle_popup_value(&mut self, _app_data: &mut Self::AppState, _return_value: Box<dyn Any>) {}
+
+    fn entry_keyhandler(&mut self, key: Event, app_data: &mut Self::AppState) -> ControlFlow<()> {
         if let Some(popup) = self.pop_up() {
             return popup.entry_keyhandler(key, app_data);
         }
@@ -305,7 +388,7 @@ pub trait Tab {
             Event::Key(x) => x,
             // todo find out why it doesnt work
             Event::Mouse(x) => {
-                self.view().cursor = Pos {
+                self.tabdata().cursor = Pos {
                     y: x.row,
                     x: x.column,
                 };
@@ -319,7 +402,7 @@ pub trait Tab {
         if !self.selected() && key.code == KeyCode::Esc {
             return ControlFlow::Break(());
         } else if self.selected() && key.code == KeyCode::Esc {
-            self.view().is_selected = false;
+            self.tabdata().is_selected = false;
             return ControlFlow::Continue(());
         } else if let Ok(ret) = Retning::try_from(key) {
             if !self.selected() {
@@ -330,7 +413,7 @@ pub trait Tab {
 
         if self.tab_keyhandler(app_data, key) {
             if !self.selected() && key.code == KeyCode::Char(' ') || key.code == KeyCode::Enter {
-                self.view().is_selected = true;
+                self.tabdata().is_selected = true;
             } else {
                 self.widget_keyhandler(app_data, key);
             }
@@ -346,15 +429,19 @@ pub trait Tab {
     // or passes it onto the widget in focus
     fn tab_keyhandler(
         &mut self,
-        _app_data: &mut Self::AppData,
+        _app_data: &mut Self::AppState,
         _key: crossterm::event::KeyEvent,
     ) -> bool {
         true
     }
 
     // Keyhandler that only mutates the widget itself.
-    fn widget_keyhandler(&mut self, app_data: &mut Self::AppData, key: crossterm::event::KeyEvent) {
-        let cursor = *self.cursor();
+    fn widget_keyhandler(
+        &mut self,
+        app_data: &mut Self::AppState,
+        key: crossterm::event::KeyEvent,
+    ) {
+        let cursor = self.cursor();
         for widget in self.widgets() {
             if widget.is_selected(&cursor) {
                 widget.keyhandler(app_data, key);
@@ -363,53 +450,40 @@ pub trait Tab {
         }
     }
 
-    fn entry_render(&mut self, f: &mut Frame, app_data: &mut Self::AppData, area: Rect) {
+    fn entry_render(&mut self, f: &mut Frame, app_data: &mut Self::AppState, area: Rect) {
         self.check_popup_value(app_data);
 
         match self.pop_up() {
             Some(pop_up) => pop_up.entry_render(f, app_data, area),
             None => {
-                self.view().areas.clear();
+                self.tabdata().areas.clear();
                 self.set_selection(area);
-                self.view().validate_pos();
+                self.tabdata().validate_pos();
                 self.render(f, app_data);
             }
         }
     }
 
-    fn render(&mut self, f: &mut ratatui::Frame, app_data: &mut Self::AppData) {
-        let view = self.view().clone();
+    fn render(&mut self, f: &mut ratatui::Frame, app_data: &mut Self::AppState) {
+        let is_selected = self.selected();
+        let cursor = self.cursor();
+
         for widget in self.widgets() {
-            widget.main_render(f, app_data, &view);
+            widget.main_render(f, app_data, is_selected, cursor);
         }
     }
 
-    fn after_keyhandler(&mut self, _app_data: &mut Self::AppData) {}
+    fn after_keyhandler(&mut self, _app_data: &mut Self::AppState) {}
 
-    fn set_selection(&mut self, area: Rect);
-
-    fn view(&mut self) -> &mut View;
-
-    fn cursor(&mut self) -> &Pos {
-        &self.view().cursor
+    fn cursor(&mut self) -> Pos {
+        self.tabdata().cursor
     }
 
     fn selected(&mut self) -> bool {
-        self.view().is_selected
+        self.tabdata().is_selected
     }
 
     fn navigate(&mut self, dir: Retning) {
-        self.view().navigate(dir);
+        self.tabdata().navigate(dir);
     }
-
-    fn widgets(&mut self) -> Vec<&mut dyn Widget<AppData = Self::AppData>>;
-
-    fn title(&self) -> &str;
-
-    fn pop_up(&mut self) -> Option<&mut dyn Tab<AppData = Self::AppData>> {
-        None
-    }
-
-    // Check if the popup has resolved
-    fn check_popup_value(&mut self, _app_data: &mut Self::AppData) {}
 }

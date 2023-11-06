@@ -358,6 +358,8 @@ pub trait Tab {
         *self.popup_state() = PopUpState::Exit;
     }
 
+    fn remove_popup_hook(&mut self) {}
+
     fn set_popup(&mut self, pop: Box<dyn Tab<AppState = Self::AppState>>) {
         self.tabdata().popup = Some(pop);
     }
@@ -374,6 +376,7 @@ pub trait Tab {
         &mut self.tabdata().popup_state
     }
 
+    /// its a function so that it can be overriden if needed.
     fn remove_popup(&mut self) {
         self.tabdata().popup = None;
     }
@@ -412,7 +415,11 @@ pub trait Tab {
 
     fn entry_keyhandler(&mut self, key: Event, app_data: &mut Self::AppState) -> ControlFlow<()> {
         if let Some(popup) = self.pop_up() {
-            return popup.entry_keyhandler(key, app_data);
+            let x = popup.entry_keyhandler(key, app_data);
+            if x.is_break() {
+                self.remove_popup();
+            }
+            return x;
         }
 
         let key = match key {

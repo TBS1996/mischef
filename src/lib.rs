@@ -455,7 +455,7 @@ pub trait Tab {
                 || key_code.code == KeyCode::Enter
             {
                 self.tabdata().is_selected = true;
-            } else {
+            } else if self.selected() {
                 self.widget_keyhandler(app_data, key_code);
             }
         }

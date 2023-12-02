@@ -1,6 +1,9 @@
-use std::{any::Any, fmt::Debug, ops::ControlFlow};
+use std::{any::Any, collections::BTreeMap, fmt::Debug, ops::ControlFlow};
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent};
+use crossterm::{
+    cursor::Show,
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+};
 use ratatui::{
     prelude::{Constraint, CrosstermBackend, Layout, Rect},
     style::{Style, Stylize},
@@ -35,6 +38,13 @@ impl TryFrom<KeyEvent> for Retning {
     }
 }
 
+pub fn with_modifier(value: KeyEvent) -> Option<Retning> {
+    if value.modifiers.contains(KeyModifiers::ALT) {
+        return Retning::try_from(value).ok();
+    }
+    None
+}
+
 type Term = ratatui::Terminal<Bakende>;
 type Bakende = ratatui::backend::CrosstermBackend<std::io::Stderr>;
 
@@ -43,6 +53,7 @@ pub struct App<T> {
     terminal: Term,
     tab_idx: usize,
     tabs: Vec<Box<dyn Tab<AppState = T>>>,
+    widget_area: Rect,
 }
 
 impl<T> App<T> {
@@ -56,7 +67,30 @@ impl<T> App<T> {
             app_state: app_data,
             tabs,
             tab_idx: 0,
+            widget_area: Rect::default(),
         }
+    }
+
+    pub fn run(&mut self) {
+        crossterm::terminal::enable_raw_mode().unwrap();
+        crossterm::execute!(
+            std::io::stderr(),
+            crossterm::terminal::EnterAlternateScreen,
+            Show
+        )
+        .unwrap();
+
+        loop {
+            self.draw();
+
+            match self.handle_key() {
+                ControlFlow::Continue(_) => continue,
+                ControlFlow::Break(_) => break,
+            }
+        }
+
+        crossterm::execute!(std::io::stderr(), crossterm::terminal::LeaveAlternateScreen).unwrap();
+        crossterm::terminal::disable_raw_mode().unwrap();
     }
 
     pub fn draw(&mut self) {
@@ -83,6 +117,7 @@ impl<T> App<T> {
                 f.render_widget(tabs, tab_area);
 
                 self.tabs[self.tab_idx].entry_render(f, &mut self.app_state, remainder_area);
+                self.widget_area = remainder_area;
             })
             .unwrap();
     }
@@ -100,13 +135,17 @@ impl<T> App<T> {
 
         let tab = &mut self.tabs[self.tab_idx];
 
-        tab.entry_keyhandler(key, &mut self.app_state);
-
-        if tab.should_exit() {
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
+        if !tab.tabdata().is_selected && tab.tabdata().popup.is_none() {
+            if let Event::Key(k) = key {
+                if k.code == KeyCode::Char('Q') {
+                    return ControlFlow::Break(());
+                }
+            }
         }
+
+        tab.entry_keyhandler(key, &mut self.app_state, self.widget_area);
+
+        ControlFlow::Continue(())
     }
 
     fn go_right(&mut self) {
@@ -132,53 +171,88 @@ impl Pos {
     }
 }
 
+#[derive(Default)]
+pub struct TabData<T> {
+    pub cursor: Pos,
+    pub is_selected: bool,
+    pub popup_state: PopUpState,
+    pub popup: Option<Box<dyn Tab<AppState = T>>>,
+    pub state_modifier: Option<Box<dyn FnMut(&Box<dyn Any>)>>,
+    pub area_map: BTreeMap<String, Rect>,
+    pub first_pass: bool,
+    pub key_history: Vec<KeyCode>,
+}
+
+pub struct Wrapper(KeyCode);
+
+impl From<KeyCode> for Wrapper {
+    fn from(value: KeyCode) -> Self {
+        Self(value)
+    }
+}
+
+impl From<char> for Wrapper {
+    fn from(c: char) -> Self {
+        Self(KeyCode::Char(c))
+    }
+}
+
+impl From<Wrapper> for KeyCode {
+    fn from(value: Wrapper) -> Self {
+        value.0
+    }
+}
+
+impl<T> Debug for TabData<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TabData")
+            .field("cursor", &self.cursor)
+            .field("is_selected", &self.is_selected)
+            .field("popup_state", &self.popup_state)
+            .finish()
+    }
+}
+
 impl<T> TabData<T> {
     pub fn _debug_show_cursor(&self, f: &mut Frame) {
         f.set_cursor(self.cursor.x, self.cursor.y);
     }
 
-    pub fn validate_pos(&mut self) {
-        for area in self.areas.iter() {
-            if self.is_selected(*area) {
-                return;
-            }
-        }
-        if !self.areas.is_empty() {
-            self.move_to_area(self.areas[0]);
-        }
-    }
-
-    pub fn move_to_area(&mut self, area: Rect) {
-        let x = area.x + area.width / 2;
-        let y = area.y + area.height / 2;
-        self.cursor = Pos::new(x, y);
-    }
-
     pub fn is_selected(&self, area: Rect) -> bool {
-        Self::isitselected(area, &self.cursor)
+        Self::isitselected(area, self.cursor)
     }
 
-    fn is_valid_pos(&self, pos: &Pos) -> bool {
-        for area in &self.areas {
+    pub fn char_match(&self, keys: &str) -> bool {
+        let keys: Vec<KeyCode> = keys.chars().map(KeyCode::Char).collect();
+        self.key_match(keys)
+    }
+
+    pub fn key_match(&self, keys: Vec<KeyCode>) -> bool {
+        if self.key_history.len() < keys.len() {
+            return false;
+        }
+
+        self.key_history.ends_with(keys.as_slice())
+    }
+
+    fn insert_key(&mut self, key: KeyCode) {
+        let max_buffer = 30;
+        let min_buffer = 10;
+
+        if self.key_history.len() > max_buffer {
+            self.key_history.drain(..(max_buffer - min_buffer));
+        }
+
+        self.key_history.push(key);
+    }
+
+    fn is_valid_pos(&self, pos: Pos) -> bool {
+        for area in self.area_map.values() {
             if Self::isitselected(*area, pos) {
                 return true;
             }
         }
         false
-    }
-
-    fn current_area(&self) -> &Rect {
-        self.areas
-            .iter()
-            .find(|area| Self::isitselected(**area, &self.cursor))
-            .unwrap()
-    }
-
-    pub fn isitselected(area: Rect, cursor: &Pos) -> bool {
-        cursor.x >= area.left()
-            && cursor.x < area.right()
-            && cursor.y >= area.top()
-            && cursor.y < area.bottom()
     }
 
     pub fn move_right(&mut self) {
@@ -187,7 +261,7 @@ impl<T> TabData<T> {
             x: current_area.right(),
             y: self.cursor.y,
         };
-        if self.is_valid_pos(&new_pos) {
+        if self.is_valid_pos(new_pos) {
             self.cursor = new_pos;
         }
     }
@@ -198,9 +272,26 @@ impl<T> TabData<T> {
             y: current_area.bottom(),
             x: self.cursor.x,
         };
-        if self.is_valid_pos(&new_pos) {
+        if self.is_valid_pos(new_pos) {
             self.cursor = new_pos;
         }
+    }
+
+    fn current_area(&self) -> Rect {
+        let cursor = self.cursor;
+        for (_, area) in self.area_map.iter() {
+            if TabData::<()>::isitselected(*area, cursor) {
+                return *area;
+            }
+        }
+        panic!("omg: {:?}", cursor);
+    }
+
+    pub fn isitselected(area: Rect, cursor: Pos) -> bool {
+        cursor.x >= area.left()
+            && cursor.x < area.right()
+            && cursor.y >= area.top()
+            && cursor.y < area.bottom()
     }
 
     pub fn move_up(&mut self) {
@@ -209,7 +300,7 @@ impl<T> TabData<T> {
             x: self.cursor.x,
             y: current_area.top().saturating_sub(1),
         };
-        if self.is_valid_pos(&new_pos) {
+        if self.is_valid_pos(new_pos) {
             self.cursor = new_pos;
         }
     }
@@ -220,7 +311,7 @@ impl<T> TabData<T> {
             x: current_area.left().saturating_sub(1),
             y: self.cursor.y,
         };
-        if self.is_valid_pos(&new_pos) {
+        if self.is_valid_pos(new_pos) {
             self.cursor = new_pos;
         }
     }
@@ -261,28 +352,38 @@ pub trait Widget {
     type AppData;
 
     fn keyhandler(&mut self, app_data: &mut Self::AppData, key: KeyEvent);
+    fn render(&mut self, f: &mut Frame, app_data: &mut Self::AppData, area: Rect);
+
+    fn id(&self) -> String {
+        format!("{:p}", self)
+    }
+
     fn main_render(
         &mut self,
         f: &mut Frame,
         app_data: &mut Self::AppData,
         is_selected: bool,
         cursor: Pos,
+        area: Rect,
     ) {
-        let rect = self.draw_titled_border(f, is_selected, cursor);
+        let rect = self.draw_titled_border(f, is_selected, cursor, area);
         self.render(f, app_data, rect);
     }
 
-    fn render(&mut self, f: &mut Frame, app_data: &mut Self::AppData, area: Rect);
-    fn area(&self) -> Rect;
-    fn set_area(&mut self, area: Rect);
     fn title(&self) -> &str {
         ""
     }
 
-    fn draw_titled_border(&self, f: &mut Frame, is_selected: bool, cursor: Pos) -> Rect {
+    fn draw_titled_border(
+        &self,
+        f: &mut Frame,
+        is_selected: bool,
+        cursor: Pos,
+        area: Rect,
+    ) -> Rect {
         let block = Block::default().title(self.title()).borders(Borders::ALL);
 
-        let block = if TabData::<Self::AppData>::isitselected(self.area(), &cursor) {
+        let block = if TabData::<Self::AppData>::isitselected(area, cursor) {
             if is_selected {
                 block.border_style(Style {
                     fg: Some(ratatui::style::Color::Red),
@@ -301,56 +402,39 @@ pub trait Widget {
             })
         };
 
-        let rect = self.area();
-
-        if rect.width < 3 || rect.height < 3 {
-            return rect;
+        if area.width < 3 || area.height < 3 {
+            return area;
         }
 
-        f.render_widget(block, rect);
+        f.render_widget(block, area);
 
         Rect {
-            x: rect.x + 1,
-            y: rect.y + 1,
-            width: rect.width.saturating_sub(2),
-            height: rect.height.saturating_sub(2),
+            x: area.x + 1,
+            y: area.y + 1,
+            width: area.width.saturating_sub(2),
+            height: area.height.saturating_sub(2),
         }
-    }
-
-    fn is_selected(&self, cursor: &Pos) -> bool {
-        TabData::<Self::AppData>::isitselected(self.area(), cursor)
-    }
-}
-
-#[derive(Default)]
-pub struct TabData<T> {
-    pub areas: Vec<Rect>,
-    pub cursor: Pos,
-    pub is_selected: bool,
-    pub popup_state: PopUpState,
-    pub popup: Option<Box<dyn Tab<AppState = T>>>,
-}
-
-impl<T> Debug for TabData<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TabData")
-            .field("areas", &self.areas)
-            .field("cursor", &self.cursor)
-            .field("is_selected", &self.is_selected)
-            .field("popup_state", &self.popup_state)
-            .finish()
     }
 }
 
 pub trait Tab {
     type AppState;
 
-    fn widgets(&mut self) -> Vec<&mut dyn Widget<AppData = Self::AppState>>;
-    fn title(&self) -> &str;
-    fn set_selection(&mut self, area: Rect);
+    /* USER DEFINED */
+
+    fn widgets(&mut self, area: Rect) -> Vec<(&mut dyn Widget<AppData = Self::AppState>, Rect)>;
     fn tabdata(&mut self) -> &mut TabData<Self::AppState>;
+    fn tabdata_ref(&self) -> &TabData<Self::AppState>;
+    fn title(&self) -> &str;
+    fn remove_popup_hook(&mut self) {}
+
+    /* USER CAN CALL */
 
     fn resolve_tab(&mut self, value: Box<dyn Any>) {
+        if let Some(mut fun) = std::mem::take(&mut self.tabdata().state_modifier) {
+            fun(&value);
+        }
+
         *self.popup_state() = PopUpState::Resolve(value);
     }
 
@@ -358,11 +442,80 @@ pub trait Tab {
         *self.popup_state() = PopUpState::Exit;
     }
 
-    fn remove_popup_hook(&mut self) {}
-
     fn set_popup(&mut self, pop: Box<dyn Tab<AppState = Self::AppState>>) {
         self.tabdata().popup = Some(pop);
     }
+
+    fn set_popup_with_modifier(
+        &mut self,
+        mut pop: Box<dyn Tab<AppState = Self::AppState>>,
+        f: Box<dyn FnMut(&Box<dyn Any>)>,
+    ) {
+        pop.tabdata().state_modifier = Some(f);
+        self.tabdata().popup = Some(pop);
+    }
+
+    fn move_to_widget(&mut self, w: &dyn Widget<AppData = Self::AppState>) {
+        let id = w.id();
+        self.move_to_id(id.as_str());
+    }
+
+    fn move_to_id(&mut self, id: &str) {
+        let area = self.tabdata().area_map[id];
+        self.move_to_area(area);
+    }
+
+    fn move_to_area(&mut self, area: Rect) {
+        let x = area.x + area.width / 2;
+        let y = area.y + area.height / 2;
+        self.tabdata().cursor = Pos::new(x, y);
+    }
+
+    fn handle_popup_value(&mut self, _app_data: &mut Self::AppState, _return_value: Box<dyn Any>) {}
+
+    /// Keyhandler stuff that should run if no widgets are selected.
+    fn tab_keyhandler_deselected(
+        &mut self,
+        _app_data: &mut Self::AppState,
+        _key: crossterm::event::KeyEvent,
+    ) -> bool {
+        true
+    }
+
+    /// Keyhandler stuff that should run if a widget is selected.
+    /// Think of this as widget specific stuff that requires the state of the tab,
+    /// and therefore the logic cannot be handled by the widget directly.
+    fn tab_keyhandler_selected(
+        &mut self,
+        _app_data: &mut Self::AppState,
+        _key: crossterm::event::KeyEvent,
+    ) -> bool {
+        true
+    }
+
+    fn is_selected(&self, w: &dyn Widget<AppData = Self::AppState>) -> bool {
+        let id = w.id();
+        let Some(area) = self.tabdata_ref().area_map.get(&id) else {
+            return false;
+        };
+
+        TabData::<()>::isitselected(*area, self.tabdata_ref().cursor)
+    }
+
+    fn pre_render_hook(&mut self, _app_data: &mut Self::AppState) {}
+
+    fn render(&mut self, f: &mut ratatui::Frame, app_data: &mut Self::AppState, area: Rect) {
+        let is_selected = self.selected();
+        let cursor = self.cursor();
+
+        for (widget, area) in self.widgets(area) {
+            widget.main_render(f, app_data, is_selected, cursor, area);
+        }
+    }
+
+    fn after_keyhandler(&mut self, _app_data: &mut Self::AppState) {}
+
+    /* INTERNAL */
 
     fn pop_up(&mut self) -> Option<&mut Box<dyn Tab<AppState = Self::AppState>>> {
         self.tabdata().popup.as_mut()
@@ -374,6 +527,17 @@ pub trait Tab {
 
     fn popup_state(&mut self) -> &mut PopUpState {
         &mut self.tabdata().popup_state
+    }
+
+    fn validate_pos(&mut self, area: Rect) {
+        let cursor = self.tabdata().cursor;
+        for (_, area) in self.widgets(area) {
+            if TabData::<()>::isitselected(area, cursor) {
+                return;
+            }
+        }
+        let the_area = self.widgets(area)[0].1;
+        self.move_to_area(the_area);
     }
 
     /// its a function so that it can be overriden if needed.
@@ -411,58 +575,39 @@ pub trait Tab {
         }
     }
 
-    fn handle_popup_value(&mut self, _app_data: &mut Self::AppState, _return_value: Box<dyn Any>) {}
+    fn pre_keyhandler_hook(&mut self, _key: KeyEvent) {}
 
-    fn entry_keyhandler(&mut self, key: Event, app_data: &mut Self::AppState) -> ControlFlow<()> {
-        let key_code = match key {
-            Event::Key(x) => x,
-            // todo find out why it doesnt work
-            Event::Mouse(x) => {
-                self.tabdata().cursor = Pos {
-                    y: x.row,
-                    x: x.column,
-                };
-                return ControlFlow::Continue(());
-            }
-            _ => {
-                return ControlFlow::Continue(());
-            }
+    fn entry_keyhandler(&mut self, event: Event, app_data: &mut Self::AppState, area: Rect) {
+        let Event::Key(key) = event else {
+            return;
         };
 
         if let Some(popup) = self.pop_up() {
-            if key_code.code == KeyCode::Esc && popup.pop_up().is_none() {
-                self.remove_popup();
-                return ControlFlow::Break(());
-            }
-            return popup.entry_keyhandler(key, app_data);
+            popup.entry_keyhandler(event, app_data, area);
+            return;
         }
 
-        if !self.selected() && key_code.code == KeyCode::Esc {
-            self.exit_tab();
-            return ControlFlow::Break(());
-        } else if self.selected() && key_code.code == KeyCode::Esc {
-            self.tabdata().is_selected = false;
-            return ControlFlow::Continue(());
-        } else if let Ok(ret) = Retning::try_from(key_code) {
-            if !self.selected() {
-                self.navigate(ret);
-                return ControlFlow::Continue(());
-            }
-        }
+        self.pre_keyhandler_hook(key);
 
-        if self.tab_keyhandler(app_data, key_code) {
-            if !self.selected() && key_code.code == KeyCode::Char(' ')
-                || key_code.code == KeyCode::Enter
-            {
+        if self.selected() {
+            if key.code == KeyCode::Esc {
+                self.tabdata().is_selected = false;
+            } else if self.tab_keyhandler(app_data, key) {
+                self.widget_keyhandler(app_data, key, area);
+            }
+        } else {
+            if key.code == KeyCode::Enter {
                 self.tabdata().is_selected = true;
-            } else if self.selected() {
-                self.widget_keyhandler(app_data, key_code);
+            } else if key.code == KeyCode::Esc {
+                self.exit_tab();
+            } else if let Ok(ret) = Retning::try_from(key) {
+                self.navigate(ret);
+            } else {
+                self.tab_keyhandler(app_data, key);
             }
         }
 
         self.after_keyhandler(app_data);
-
-        ControlFlow::Continue(())
     }
 
     // Keyhandling that requires the state of the object.
@@ -470,10 +615,16 @@ pub trait Tab {
     // or passes it onto the widget in focus
     fn tab_keyhandler(
         &mut self,
-        _app_data: &mut Self::AppState,
-        _key: crossterm::event::KeyEvent,
+        app_data: &mut Self::AppState,
+        key: crossterm::event::KeyEvent,
     ) -> bool {
-        true
+        self.tabdata().insert_key(key.code);
+
+        if self.tabdata().is_selected {
+            self.tab_keyhandler_selected(app_data, key)
+        } else {
+            self.tab_keyhandler_deselected(app_data, key)
+        }
     }
 
     // Keyhandler that only mutates the widget itself.
@@ -481,14 +632,23 @@ pub trait Tab {
         &mut self,
         app_data: &mut Self::AppState,
         key: crossterm::event::KeyEvent,
+        area: Rect,
     ) {
         let cursor = self.cursor();
-        for widget in self.widgets() {
-            if widget.is_selected(&cursor) {
+        for (widget, area) in self.widgets(area) {
+            if TabData::<Self::AppState>::isitselected(area, cursor) {
                 widget.keyhandler(app_data, key);
                 return;
             }
         }
+    }
+
+    fn set_map(&mut self, area: Rect) {
+        let mut map = BTreeMap::new();
+        for (widget, area) in self.widgets(area) {
+            map.insert(widget.id(), area);
+        }
+        self.tabdata().area_map = map;
     }
 
     fn entry_render(&mut self, f: &mut Frame, app_data: &mut Self::AppState, area: Rect) {
@@ -497,28 +657,19 @@ pub trait Tab {
         match self.pop_up() {
             Some(pop_up) => pop_up.entry_render(f, app_data, area),
             None => {
-                self.tabdata().areas.clear();
-                self.set_selection(area);
-                self.tabdata().validate_pos();
-                self.render(f, app_data);
+                self.set_map(area);
+                self.validate_pos(area);
+                self.pre_render_hook(app_data);
+                self.render(f, app_data, area);
             }
         }
+
+        self.tabdata().first_pass = true;
     }
 
     fn should_exit(&mut self) -> bool {
         matches!(self.popup_state(), PopUpState::Exit)
     }
-
-    fn render(&mut self, f: &mut ratatui::Frame, app_data: &mut Self::AppState) {
-        let is_selected = self.selected();
-        let cursor = self.cursor();
-
-        for widget in self.widgets() {
-            widget.main_render(f, app_data, is_selected, cursor);
-        }
-    }
-
-    fn after_keyhandler(&mut self, _app_data: &mut Self::AppState) {}
 
     fn cursor(&mut self) -> Pos {
         self.tabdata().cursor

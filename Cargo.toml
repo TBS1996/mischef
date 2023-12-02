@@ -1,6 +1,6 @@
 [package]
 name = "mischef"
-version = "0.1.14"
+version = "0.1.15"
 edition = "2021"
 description = "Framework using ratatui"
 license = "MIT OR Apache-2.0"
@@ -10,4 +10,6 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 crossterm = "0.27.0"
+lazy_static = "1.4.0"
+once_cell = "1.18.0"
 ratatui = "0.24.0"

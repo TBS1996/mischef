@@ -1,4 +1,9 @@
-use std::{any::Any, collections::BTreeMap, fmt::Debug, ops::ControlFlow};
+use std::{
+    any::Any,
+    collections::BTreeMap,
+    fmt::{Debug, Display},
+    ops::ControlFlow,
+};
 
 use crossterm::{
     cursor::Show,
@@ -6,9 +11,10 @@ use crossterm::{
 };
 use ratatui::{
     prelude::{Constraint, CrosstermBackend, Layout, Rect},
-    style::{Style, Stylize},
+    style::{Color, Modifier, Style, Stylize},
     symbols,
-    widgets::{Block, Borders, Tabs},
+    text::Line,
+    widgets::{Block, Borders, List, ListItem, ListState, Tabs},
     Frame, Terminal,
 };
 
@@ -681,5 +687,102 @@ pub trait Tab {
 
     fn navigate(&mut self, dir: Retning) {
         self.tabdata().navigate(dir);
+    }
+}
+
+#[derive(Default)]
+pub struct StatefulList<T> {
+    pub state: ListState,
+    pub items: Vec<T>,
+}
+
+impl<T> StatefulList<T> {
+    pub fn with_items(items: Vec<T>) -> StatefulList<T> {
+        let mut state = ListState::default();
+        if !items.is_empty() {
+            state.select(Some(0));
+        }
+        StatefulList { state, items }
+    }
+
+    pub fn next(&mut self) {
+        let i = match self.state.selected() {
+            Some(i) => {
+                if i >= self.items.len() - 1 {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.state.select(Some(i));
+    }
+
+    pub fn previous(&mut self) {
+        let i = match self.state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.items.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.state.select(Some(i));
+    }
+
+    pub fn selected_mut(&mut self) -> Option<&mut T> {
+        match self.state.selected() {
+            Some(c) => Some(&mut self.items[c]),
+            None => None,
+        }
+    }
+
+    pub fn selected(&self) -> Option<&T> {
+        match self.state.selected() {
+            Some(c) => Some(&self.items[c]),
+            None => None,
+        }
+    }
+}
+
+impl<T: Display> Widget for StatefulList<T> {
+    type AppData = ();
+
+    fn keyhandler(&mut self, _cache: &mut (), key: crossterm::event::KeyEvent) {
+        match key.code {
+            crossterm::event::KeyCode::Up => self.previous(),
+            crossterm::event::KeyCode::Down => self.next(),
+            crossterm::event::KeyCode::Char('k') => self.previous(),
+            crossterm::event::KeyCode::Char('j') => self.next(),
+            _ => {}
+        }
+    }
+
+    fn render(&mut self, f: &mut Frame, cache: &mut (), area: Rect) {
+        let items: Vec<ListItem> = self
+            .items
+            .iter()
+            .map(|i| {
+                let i = format!("{}", i);
+                let lines = vec![Line::from(i)];
+                ListItem::new(lines).style(Style::default().fg(Color::Black).bg(Color::White))
+            })
+            .collect();
+
+        // Create a List from all list items and highlight the currently selected one
+        let items = List::new(items)
+            .highlight_style(
+                Style::default()
+                    .bg(Color::LightGreen)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol(">> ");
+
+        // We can now render the item list
+        let mut state = self.state.clone();
+        f.render_stateful_widget(items, area, &mut state);
     }
 }

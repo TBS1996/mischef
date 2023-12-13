@@ -182,6 +182,7 @@ pub struct TabData<T> {
     pub cursor: Pos,
     pub is_selected: bool,
     pub popup_state: PopUpState,
+    pub proxy: Option<Box<dyn Tab<AppState = T>>>,
     pub popup: Option<Box<dyn Tab<AppState = T>>>,
     pub state_modifier: Option<Box<dyn FnMut(&Box<dyn Any>)>>,
     pub area_map: BTreeMap<String, Rect>,
@@ -448,6 +449,10 @@ pub trait Tab {
         *self.popup_state() = PopUpState::Exit;
     }
 
+    fn set_proxy(&mut self, proxy: Box<dyn Tab<AppState = Self::AppState>>) {
+        self.tabdata().proxy = Some(proxy);
+    }
+
     fn set_popup(&mut self, pop: Box<dyn Tab<AppState = Self::AppState>>) {
         self.tabdata().popup = Some(pop);
     }
@@ -510,6 +515,10 @@ pub trait Tab {
 
     fn pre_render_hook(&mut self, _app_data: &mut Self::AppState) {}
 
+    fn phantom(&mut self) -> Option<&mut Box<dyn Tab<AppState = Self::AppState>>> {
+        None
+    }
+
     fn render(&mut self, f: &mut ratatui::Frame, app_data: &mut Self::AppState, area: Rect) {
         let is_selected = self.selected();
         let cursor = self.cursor();
@@ -525,6 +534,10 @@ pub trait Tab {
 
     fn pop_up(&mut self) -> Option<&mut Box<dyn Tab<AppState = Self::AppState>>> {
         self.tabdata().popup.as_mut()
+    }
+
+    fn proxy(&mut self) -> Option<&mut Box<dyn Tab<AppState = Self::AppState>>> {
+        self.tabdata().proxy.as_mut()
     }
 
     fn get_popup_value(&mut self) -> Option<&mut PopUpState> {
@@ -583,10 +596,21 @@ pub trait Tab {
 
     fn pre_keyhandler_hook(&mut self, _key: KeyEvent) {}
 
+    fn pre_popup_hook(&mut self, _app_data: &mut Self::AppState) {}
+
     fn entry_keyhandler(&mut self, event: Event, app_data: &mut Self::AppState, area: Rect) {
         let Event::Key(key) = event else {
             return;
         };
+
+        if let Some(proxy) = self.proxy() {
+            proxy.entry_keyhandler(event, app_data, area);
+            return;
+        }
+
+        if self.pop_up().is_none() {
+            self.pre_popup_hook(app_data);
+        }
 
         if let Some(popup) = self.pop_up() {
             popup.entry_keyhandler(event, app_data, area);
@@ -658,7 +682,15 @@ pub trait Tab {
     }
 
     fn entry_render(&mut self, f: &mut Frame, app_data: &mut Self::AppState, area: Rect) {
+        if let Some(proxy) = self.proxy() {
+            proxy.entry_render(f, app_data, area);
+        }
+
         self.check_popup_value(app_data);
+
+        if self.pop_up().is_none() {
+            self.pre_popup_hook(app_data);
+        }
 
         match self.pop_up() {
             Some(pop_up) => pop_up.entry_render(f, app_data, area),
@@ -687,102 +719,5 @@ pub trait Tab {
 
     fn navigate(&mut self, dir: Retning) {
         self.tabdata().navigate(dir);
-    }
-}
-
-#[derive(Default)]
-pub struct StatefulList<T> {
-    pub state: ListState,
-    pub items: Vec<T>,
-}
-
-impl<T> StatefulList<T> {
-    pub fn with_items(items: Vec<T>) -> StatefulList<T> {
-        let mut state = ListState::default();
-        if !items.is_empty() {
-            state.select(Some(0));
-        }
-        StatefulList { state, items }
-    }
-
-    pub fn next(&mut self) {
-        let i = match self.state.selected() {
-            Some(i) => {
-                if i >= self.items.len() - 1 {
-                    0
-                } else {
-                    i + 1
-                }
-            }
-            None => 0,
-        };
-        self.state.select(Some(i));
-    }
-
-    pub fn previous(&mut self) {
-        let i = match self.state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.items.len() - 1
-                } else {
-                    i - 1
-                }
-            }
-            None => 0,
-        };
-        self.state.select(Some(i));
-    }
-
-    pub fn selected_mut(&mut self) -> Option<&mut T> {
-        match self.state.selected() {
-            Some(c) => Some(&mut self.items[c]),
-            None => None,
-        }
-    }
-
-    pub fn selected(&self) -> Option<&T> {
-        match self.state.selected() {
-            Some(c) => Some(&self.items[c]),
-            None => None,
-        }
-    }
-}
-
-impl<T: Display> Widget for StatefulList<T> {
-    type AppData = ();
-
-    fn keyhandler(&mut self, _cache: &mut (), key: crossterm::event::KeyEvent) {
-        match key.code {
-            crossterm::event::KeyCode::Up => self.previous(),
-            crossterm::event::KeyCode::Down => self.next(),
-            crossterm::event::KeyCode::Char('k') => self.previous(),
-            crossterm::event::KeyCode::Char('j') => self.next(),
-            _ => {}
-        }
-    }
-
-    fn render(&mut self, f: &mut Frame, cache: &mut (), area: Rect) {
-        let items: Vec<ListItem> = self
-            .items
-            .iter()
-            .map(|i| {
-                let i = format!("{}", i);
-                let lines = vec![Line::from(i)];
-                ListItem::new(lines).style(Style::default().fg(Color::Black).bg(Color::White))
-            })
-            .collect();
-
-        // Create a List from all list items and highlight the currently selected one
-        let items = List::new(items)
-            .highlight_style(
-                Style::default()
-                    .bg(Color::LightGreen)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol(">> ");
-
-        // We can now render the item list
-        let mut state = self.state.clone();
-        f.render_stateful_widget(items, area, &mut state);
     }
 }
